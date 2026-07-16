@@ -1,0 +1,18 @@
+[package]
+name = "metronomos-pulse-macros"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+include.workspace = true
+description = "Procedural macros for metronomos-pulse dependency injection container."
+homepage.workspace = true
+repository.workspace = true
+keywords = ["dependency-injection", "di", "proc-macro", "containers"]
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "2.0"
+quote = "1.0"

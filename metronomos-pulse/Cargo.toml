@@ -1,0 +1,30 @@
+[package]
+name = "metronomos-pulse"
+version = "0.1.0"
+authors.workspace = true
+edition.workspace = true
+license.workspace = true
+include.workspace = true
+description = "Type-safe dependency injection (DI) container for Rust."
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+keywords = ["dependency-injection", "di", "async"]
+
+[dependencies]
+any-container = { path = "../any-container", version = "0.1.0" }
+metronomos-loom = { path = "../metronomos-loom", version = "0.1.0" }
+metronomos-pulse-macros = { path = "../metronomos-pulse-macros", version = "0.1.0" }
+futures = "0.3"
+seq-macro = "0.3"
+thiserror = "2.0"
+tracing = "0.1"
+
+# Optional dependencies
+reqwest = { version = "^0", optional = true }
+
+[features]
+ext-reqwest = ["reqwest"]
+
+[dev-dependencies]
+tokio = { version = "1.0", features = ["full"] }

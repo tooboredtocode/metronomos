@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "any-container",
+    "metronomos",
+    "metronomos-loom",
+    "metronomos-pulse",
+    "metronomos-pulse-macros"
+]
+resolver = "3"
+
+[workspace.package]
+authors = ["tooboredtocode"]
+edition = "2024"
+include = ["src/**/*.rs", "README.md"]
+license = "ISC"
+repository = "https://github.com/tooboredtocode/metronomos.git"
+homepage = "https://github.com/tooboredtocode/metronomos"
