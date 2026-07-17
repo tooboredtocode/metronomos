@@ -10,7 +10,7 @@ use std::time::Duration;
 use metronomos_pulse::PulseContainer;
 use metronomos_pulse::container::PulseContext;
 use tokio::signal::ctrl_c;
-use tracing::{Span, error, info};
+use tracing::{debug, error, instrument};
 
 pub mod builder;
 pub mod lifecycle;
@@ -24,7 +24,6 @@ use lifecycle::LifecycleInner;
 pub struct Runtime {
     pub(crate) container: PulseContainer,
     pub(crate) lifecycle: LifecycleInner,
-    pub(crate) span: Span,
 }
 
 impl Runtime {
@@ -46,42 +45,24 @@ impl Runtime {
     /// 1. Starts all lifecycle hooks registered via the builder in dependency order.
     /// 2. Waits for either a shutdown signal (Ctrl+C) or a panic in any hook task.
     /// 3. Gracefully shuts down all hooks, waiting up to `shutdown_timeout` for each to complete.
+    #[instrument(skip(self), name = "PulseContainer")]
     pub async fn run(&mut self, shutdown_timeout: Option<Duration>) {
-        let Self {
-            lifecycle, span, ..
-        } = self;
+        debug!("Runtime started, starting all lifecycle hooks...");
 
-        info!(
-            parent: span.id(),
-            "Runtime started, starting all lifecycle hooks..."
-        );
+        let mut ctx = self.lifecycle.start_hooks();
 
-        let mut ctx = lifecycle.start_hooks();
-
-        info!(
-            parent: span.id(),
-            "All lifecycle hooks started, waiting for signal to stop..."
-        );
+        debug!("All lifecycle hooks started, waiting for signal to stop...");
         tokio::select!(
             _ = Self::wait_for_shutdown_signal() => {
-                info!(
-                    parent: span.id(),
-                    "Signal received, stopping all lifecycle hooks..."
-                );
+                debug!("Signal received, stopping all lifecycle hooks...");
                 ctx.shutdown(shutdown_timeout).await;
             },
             panicked = ctx.wait_for_panicked_task() => {
                 if panicked {
-                    error!(
-                        parent: span.id(),
-                        "One or more lifecycle hooks panicked, shutting down..."
-                    );
+                    error!("One or more lifecycle hooks panicked, shutting down...");
                     ctx.shutdown(shutdown_timeout).await;
                 } else {
-                    info!(
-                        parent: span.id(),
-                        "All lifecycle hooks completed successfully, shutting down..."
-                    );
+                    debug!("All lifecycle hooks completed successfully, shutting down...");
                 }
             }
         );

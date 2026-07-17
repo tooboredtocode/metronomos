@@ -23,7 +23,7 @@ use std::time::Duration;
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio::time::{Instant, timeout_at};
-use tracing::{debug, info};
+use tracing::debug;
 
 mod interval;
 mod shutdown;
@@ -51,9 +51,9 @@ impl LifecycleContext {
     ///
     /// This is typically called from within a lifecycle hook when an unrecoverable error occurs,
     /// such as a connection failure or a critical configuration issue. Once called, all background
-    /// tasks are signaled to stop and the runtime waits for them to complete (or times out).
+    /// tasks are signalled to stop and the runtime waits for them to complete (or times out).
     ///
-    /// # Behavior
+    /// # Behaviour
     ///
     /// This method is idempotent — calling it multiple times from different hooks has the same
     /// effect as a single call. The first caller wins.
@@ -121,7 +121,9 @@ impl LifecycleContextManager {
     }
 
     /// Shutdown the lifecycle context, waiting for all tasks to finish.
-    pub(crate) async fn shutdown(&mut self, timeout: Option<Duration>) {
+    ///
+    /// Returns the number of tasks that were aborted due to the shutdown timeout.
+    pub(crate) async fn shutdown(&mut self, timeout: Option<Duration>) -> usize {
         self.ctx.shutdown();
         match timeout {
             Some(duration) => self.shutdown_wait_with_timeout(duration).await,
@@ -129,15 +131,16 @@ impl LifecycleContextManager {
         }
     }
 
-    async fn shutdown_wait_no_timeout(&mut self) {
-        info!("Waiting for {} tasks to finish", self.join_set.len());
+    async fn shutdown_wait_no_timeout(&mut self) -> usize {
+        debug!("Waiting for {} tasks to finish", self.join_set.len());
         // We don't care about any panics in the tasks, we just want to wait for them to finish.
         while self.join_set.join_next().await.is_some() {}
+        0 // tasks aborted
     }
 
-    async fn shutdown_wait_with_timeout(&mut self, timeout: Duration) {
+    async fn shutdown_wait_with_timeout(&mut self, timeout: Duration) -> usize {
         let deadline = Instant::now() + timeout;
-        info!(
+        debug!(
             "Waiting for {} tasks to finish with timeout of {:?}",
             self.join_set.len(),
             timeout
@@ -149,7 +152,8 @@ impl LifecycleContextManager {
         let remaining_tasks = self.join_set.len();
         if remaining_tasks > 0 {
             self.join_set.abort_all();
-            info!("Timeout elapsed. Aborted {} tasks.", remaining_tasks);
+            debug!("Timeout elapsed. Aborted {} tasks.", remaining_tasks);
         }
+        remaining_tasks
     }
 }

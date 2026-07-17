@@ -10,7 +10,6 @@ use metronomos_pulse::builder::{ProvideError, ProvideValueError, PulseContainerB
 use metronomos_pulse::dependency::{AsyncFnDependency, FnDependency};
 use metronomos_pulse::error::PulseError;
 use metronomos_pulse::value::PulseValue;
-use tracing::{Level, Span};
 
 use crate::Runtime;
 use crate::lifecycle::LifecycleInner;
@@ -23,7 +22,6 @@ use crate::lifecycle::LifecycleInner;
 pub struct RuntimeBuilder {
     pub(crate) container_builder: PulseContainerBuilder,
     pub(crate) lifecycle: LifecycleInner,
-    pub(crate) span: Span,
 }
 
 impl Runtime {
@@ -33,22 +31,13 @@ impl Runtime {
     /// dependency registrations and lifecycle configuration, which are then finalized
     /// by calling [`RuntimeBuilder::build`](crate::builder::RuntimeBuilder::build).
     pub fn builder() -> RuntimeBuilder {
-        let span = tracing::span!(
-            target: "metronomos",
-            Level::INFO,
-            "Runtime"
-        );
-
-        let enter = span.enter();
         let mut container_builder = PulseContainer::builder();
         let lifecycle = LifecycleInner::new();
         _ = container_builder.provide(lifecycle.as_provide());
 
-        drop(enter);
         RuntimeBuilder {
             container_builder,
             lifecycle,
-            span,
         }
     }
 
@@ -137,7 +126,6 @@ impl RuntimeBuilder {
         Ok(Runtime {
             container,
             lifecycle: self.lifecycle,
-            span: self.span,
         })
     }
 }

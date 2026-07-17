@@ -5,7 +5,7 @@ use futures::future;
 use metronomos_loom::DependencyGraph;
 use metronomos_loom::builder::DependencyGraphBuilder;
 use metronomos_loom::dependency::DependencyKeyKind;
-use tracing::{Instrument, Span, info};
+use tracing::{Instrument, debug, instrument};
 
 use crate::PulseContainer;
 use crate::dependency::{
@@ -25,7 +25,6 @@ pub use error::{ProvideError, ProvideValueError};
 /// and instantiate every value in the correct initialization order.
 pub struct PulseContainerBuilder {
     dep: DependencyGraphBuilder<PulseDependency>,
-    span: Span,
 }
 
 impl PulseContainer {
@@ -34,37 +33,28 @@ impl PulseContainer {
     /// The builder collects dependency registrations and is then used via
     /// [`build`](PulseContainerBuilder::build) to produce the final container.
     pub fn builder() -> PulseContainerBuilder {
-        let span = tracing::span!(
-            target: "metronomos_pulse",
-            tracing::Level::INFO,
-            "PulseContainer"
-        );
-
         PulseContainerBuilder {
             dep: DependencyGraph::builder(),
-            span,
         }
     }
 }
 
 macro_rules! log_provide {
-    ($self:ident, $value:ty, sync $provide_fn_sync:ident) => {
-        log_provide!($self, $value, sync $provide_fn_sync, async);
+    ($value:ty, sync $provide_fn_sync:ident) => {
+        log_provide!($value, sync $provide_fn_sync, async);
     };
-    ($self:ident, $value:ty, async $provide_fn_async:ident) => {
-        log_provide!($self, $value, sync, async $provide_fn_async);
+    ($value:ty, async $provide_fn_async:ident) => {
+        log_provide!($value, sync, async $provide_fn_async);
     };
-    ($self:ident, $value:ty, sync $($provide_fn_sync:ident)?, async $($provide_fn_async:ident)?) => {
+    ($value:ty, sync $($provide_fn_sync:ident)?, async $($provide_fn_async:ident)?) => {
         if <$value as PulseValue>::IS_FINALIZER {
-            info!(
-                parent: $self.span.id(),
+            debug!(
                 $( finalizer = std::any::type_name::<$provide_fn_sync>(), )?
                 $( async_finalizer = std::any::type_name::<$provide_fn_async>(), )?
                 "provide",
             );
         } else {
-            info!(
-                parent: $self.span.id(),
+            debug!(
                 value = <$value as PulseValue>::name(),
                 $( constructor = std::any::type_name::<$provide_fn_sync>(), )?
                 $( async_constructor = std::any::type_name::<$provide_fn_async>(), )?
@@ -84,7 +74,7 @@ impl PulseContainerBuilder {
     where
         F: FnDependency<Dep>,
     {
-        log_provide!(self, F::Value, sync F);
+        log_provide!(F::Value, sync F);
         self.dep.add_dependency(PulseDependency::new_fun(fun))?;
         Ok(())
     }
@@ -99,7 +89,7 @@ impl PulseContainerBuilder {
         F: AsyncFnDependency<Dep>,
         Dep: Send + Sync + 'static,
     {
-        log_provide!(self, F::Value, async F);
+        log_provide!(F::Value, async F);
         self.dep
             .add_dependency(PulseDependency::new_async_fun(fun))?;
         Ok(())
@@ -110,11 +100,7 @@ impl PulseContainerBuilder {
     /// Use this method when the value does not depend on other dependencies and requires no initialization.
     /// The type must implement [`PulseValue`], which is typically derived via `#[derive(PulseValue)]`.
     pub fn provide_value<V: PulseValue>(&mut self, value: V) -> Result<(), ProvideValueError<V>> {
-        info!(
-            parent: self.span.id(),
-            value = V::name(),
-            "provide_value"
-        );
+        debug!(value = V::name(), "provide_value");
         self.dep.add_dependency(ValueDependency(value))?;
         Ok(())
     }
@@ -133,35 +119,24 @@ impl PulseContainerBuilder {
         &mut self,
         value: T,
     ) -> Result<(), ProvideValueError<T>> {
-        info!(
-            parent: self.span.id(),
-            value = ArcValue::<T>::name(),
-            "provide_value"
-        );
+        debug!(value = ArcValue::<T>::name(), "provide_value");
         self.dep.add_dependency(ArcValueDependency(value))?;
         Ok(())
     }
 
     /// Builds the container and initializes all dependencies.
+    #[instrument(skip(self), name = "build_container")]
     pub async fn build(self) -> Result<PulseContainer, PulseError> {
-        let Self { dep, span } = self;
+        let Self { dep } = self;
 
-        info!(
-            parent: span.id(),
-            "building dependency graph"
-        );
+        debug!("building dependency graph");
         let graph = dep.build()?;
         let mut res = PulseContainer::new(DotString::make(&graph));
 
         for (num, chunk) in graph.init_chunks().enumerate() {
-            let chunk_span = tracing::span!(
-                parent: span.id(),
-                tracing::Level::INFO,
-                "init_chunk",
-                num = num + 1,
-            );
+            let chunk_span = tracing::span!(tracing::Level::INFO, "init_chunk", num = num + 1,);
 
-            info!(parent: chunk_span.id(), "initializing dependencies in chunk {}", num + 1);
+            debug!(parent: chunk_span.id(), "initializing dependencies in chunk {}", num + 1);
 
             let chunk_values = future::try_join_all(
                 chunk
@@ -187,10 +162,7 @@ impl PulseContainerBuilder {
             }
         }
 
-        info!(
-            parent: span.id(),
-            "dependency graph built and initialized successfully"
-        );
+        debug!("dependency graph built and initialized successfully");
 
         Ok(res)
     }

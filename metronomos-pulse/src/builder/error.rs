@@ -78,8 +78,7 @@ impl<T> std::error::Error for ProvideValueError<T> {}
 
 impl<V> From<ProvideValueError<V>> for ProvideError {
     fn from(err: ProvideValueError<V>) -> Self {
-        let (_, err) = err.into_inner();
-        err
+        err.error
     }
 }
 
