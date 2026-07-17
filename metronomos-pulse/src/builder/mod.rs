@@ -5,7 +5,7 @@ use futures::future;
 use metronomos_loom::DependencyGraph;
 use metronomos_loom::builder::DependencyGraphBuilder;
 use metronomos_loom::dependency::DependencyKeyKind;
-use tracing::{Instrument, debug, instrument};
+use tracing::{debug, instrument};
 
 use crate::PulseContainer;
 use crate::dependency::{
@@ -129,21 +129,18 @@ impl PulseContainerBuilder {
     pub async fn build(self) -> Result<PulseContainer, PulseError> {
         let Self { dep } = self;
 
-        debug!("building dependency graph");
+        debug!("Building dependency graph");
         let graph = dep.build()?;
         let mut res = PulseContainer::new(DotString::make(&graph));
 
         for (num, chunk) in graph.init_chunks().enumerate() {
-            let chunk_span = tracing::span!(tracing::Level::INFO, "init_chunk", num = num + 1,);
-
-            debug!(parent: chunk_span.id(), "initializing dependencies in chunk {}", num + 1);
+            debug!("Initializing dependency chunk {}", num + 1);
 
             let chunk_values = future::try_join_all(
                 chunk
                     .into_iter()
                     .map(|dep| dep.inner().build(res.context())),
             )
-            .instrument(chunk_span)
             .await?;
 
             for (kind, value) in chunk_values {
@@ -162,7 +159,7 @@ impl PulseContainerBuilder {
             }
         }
 
-        debug!("dependency graph built and initialized successfully");
+        debug!("Dependency graph built and initialized successfully");
 
         Ok(res)
     }
