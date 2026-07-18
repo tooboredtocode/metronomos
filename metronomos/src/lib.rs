@@ -5,8 +5,6 @@
 //! with graceful shutdown support.
 //!
 
-use std::time::Duration;
-
 use metronomos_pulse::PulseContainer;
 use metronomos_pulse::container::PulseContext;
 use tokio::signal::ctrl_c;
@@ -44,9 +42,9 @@ impl Runtime {
     ///
     /// 1. Starts all lifecycle hooks registered via the builder in dependency order.
     /// 2. Waits for either a shutdown signal (Ctrl+C) or a panic in any hook task.
-    /// 3. Gracefully shuts down all hooks, waiting up to `shutdown_timeout` for each to complete.
+    /// 3. Gracefully shuts down all hooks, waiting up to their respective shutdown timeouts for cleanup.
     #[instrument(skip(self), name = "PulseContainer")]
-    pub async fn run(&mut self, shutdown_timeout: Option<Duration>) {
+    pub async fn run(&mut self) {
         debug!("Runtime started, starting all lifecycle hooks...");
 
         let mut ctx = self.lifecycle.start_hooks();
@@ -55,12 +53,12 @@ impl Runtime {
         tokio::select!(
             _ = Self::wait_for_shutdown_signal() => {
                 debug!("Signal received, stopping all lifecycle hooks...");
-                ctx.shutdown(shutdown_timeout).await;
+                ctx.shutdown().await;
             },
             panicked = ctx.wait_for_panicked_task() => {
                 if panicked {
                     error!("One or more lifecycle hooks panicked, shutting down...");
-                    ctx.shutdown(shutdown_timeout).await;
+                    ctx.shutdown().await;
                 } else {
                     debug!("All lifecycle hooks completed successfully, shutting down...");
                 }

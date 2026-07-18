@@ -16,13 +16,15 @@
 //! of a fatal error, which will trigger an immediate graceful shutdown of the entire application.
 //!
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use tokio::select;
 use tokio::sync::Notify;
-use tokio::task::JoinSet;
-use tokio::time::{Instant, timeout_at};
+use tokio::task::{AbortHandle, JoinSet};
+use tokio::time::{Instant, sleep_until};
 use tracing::debug;
 
 mod interval;
@@ -33,7 +35,12 @@ pub use interval::LifecycleInterval;
 pub use shutdown::{Shutdown, ShutdownOwned};
 pub use stream::LifecycleStream;
 
-/// A context handle passed to lifecycle hooks for managing background tasks and shutdown.
+/// The context passed to lifecycle hooks.
+///
+/// Provides methods for spawning background tasks, receiving periodic intervals,
+/// wrapping Tokio streams, and triggering a graceful shutdown of the application.
+///
+/// See [`LifecycleContext::notify_error`] to initiate an immediate shutdown from within a hook.
 #[derive(Clone, Debug)]
 pub struct LifecycleContext {
     notify: Arc<Notify>,
@@ -43,6 +50,7 @@ pub struct LifecycleContext {
 pub(crate) struct LifecycleContextManager {
     ctx: LifecycleContext,
     join_set: JoinSet<()>,
+    timeouts: BTreeMap<Duration, Vec<AbortHandle>>,
 }
 
 impl LifecycleContext {
@@ -88,17 +96,22 @@ impl LifecycleContextManager {
         Self {
             ctx,
             join_set: JoinSet::new(),
+            timeouts: BTreeMap::new(),
         }
     }
 
     /// Spawn a new task within the lifecycle context.
     /// The task will be managed by the lifecycle context and will be awaited during shutdown.
-    pub(super) fn spawn<F, Fut>(&mut self, task: &F)
+    /// If a timeout is provided, the task will be aborted if it does not complete within the specified duration.
+    pub(super) fn spawn<F, Fut>(&mut self, task: &F, timeout: Option<Duration>)
     where
         F: Fn(LifecycleContext) -> Fut + Send + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        self.join_set.spawn(task(self.get_context()));
+        let abort_handle = self.join_set.spawn(task(self.get_context()));
+        if let Some(timeout) = timeout {
+            self.timeouts.entry(timeout).or_default().push(abort_handle);
+        }
     }
 
     pub(crate) fn get_context(&self) -> LifecycleContext {
@@ -120,40 +133,49 @@ impl LifecycleContextManager {
         false
     }
 
-    /// Shutdown the lifecycle context, waiting for all tasks to finish.
-    ///
-    /// Returns the number of tasks that were aborted due to the shutdown timeout.
-    pub(crate) async fn shutdown(&mut self, timeout: Option<Duration>) -> usize {
+    /// Shutdown the lifecycle context, waiting for all tasks to finish, aborting any that exceed
+    /// their timeout.
+    pub(crate) async fn shutdown(&mut self) {
+        let Self {
+            join_set, timeouts, ..
+        } = self;
+
         self.ctx.shutdown();
-        match timeout {
-            Some(duration) => self.shutdown_wait_with_timeout(duration).await,
-            None => self.shutdown_wait_no_timeout().await,
+        debug!("Waiting for {} tasks to finish", join_set.len());
+
+        // Wait for all tasks to finish or abort any that exceed their timeout.
+        select! {
+            _ = Self::join_tasks_task(join_set) => {},
+            _ = Self::timeout_abort_task(timeouts) => {},
+        }
+
+        // Finally, wait for any remaining tasks to finish after aborting those that exceeded their timeout.
+        Self::join_tasks_task(join_set).await;
+    }
+
+    /// Abort any tasks that exceed their timeout.
+    async fn timeout_abort_task(timeouts: &BTreeMap<Duration, Vec<AbortHandle>>) {
+        let now = Instant::now();
+
+        for (timeout, abort_handles) in timeouts {
+            sleep_until(now + *timeout).await;
+
+            let abort_count = abort_handles
+                .iter()
+                .filter(|handle| !handle.is_finished()) // Only abort tasks that are still running
+                .map(AbortHandle::abort)
+                .count();
+            if abort_count > 0 {
+                debug!(
+                    "{} tasks exceeded their timeout of {:?} and were aborted",
+                    abort_count, timeout
+                );
+            }
         }
     }
 
-    async fn shutdown_wait_no_timeout(&mut self) -> usize {
-        debug!("Waiting for {} tasks to finish", self.join_set.len());
-        // We don't care about any panics in the tasks, we just want to wait for them to finish.
-        while self.join_set.join_next().await.is_some() {}
-        0 // tasks aborted
-    }
-
-    async fn shutdown_wait_with_timeout(&mut self, timeout: Duration) -> usize {
-        let deadline = Instant::now() + timeout;
-        debug!(
-            "Waiting for {} tasks to finish with timeout of {:?}",
-            self.join_set.len(),
-            timeout
-        );
-
-        while let Ok(Some(_)) = timeout_at(deadline, self.join_set.join_next()).await {}
-
-        // After the timeout, we will abort any remaining tasks.
-        let remaining_tasks = self.join_set.len();
-        if remaining_tasks > 0 {
-            self.join_set.abort_all();
-            debug!("Timeout elapsed. Aborted {} tasks.", remaining_tasks);
-        }
-        remaining_tasks
+    /// Wait for all tasks to finish, ignoring any panics.
+    async fn join_tasks_task(join_set: &mut JoinSet<()>) {
+        while join_set.join_next().await.is_some() {}
     }
 }

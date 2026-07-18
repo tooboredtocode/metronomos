@@ -5,6 +5,8 @@
 //! [`Runtime::builder()`](crate::Runtime::builder) and [`Runtime::new_with()`](crate::Runtime::new_with)
 //! for the primary entry points.
 
+use std::time::Duration;
+
 use metronomos_pulse::PulseContainer;
 use metronomos_pulse::builder::{ProvideError, ProvideValueError, PulseContainerBuilder};
 use metronomos_pulse::dependency::{AsyncFnDependency, FnDependency};
@@ -56,6 +58,17 @@ impl Runtime {
 }
 
 impl RuntimeBuilder {
+    /// Sets the default timeout for lifecycle hooks.
+    ///
+    /// By default, lifecycle hooks which do not specify a timeout will be immediately aborted on
+    /// shutdown. This method allows you to extend the default timeout for all hooks that do not
+    /// specify a timeout explicitly.
+    #[inline]
+    pub fn with_lifecycle_timeout(mut self, timeout: Duration) -> Self {
+        self.lifecycle.set_default_timeout(timeout);
+        self
+    }
+
     /// Applies a function to the runtime builder for registering multiple dependencies at once.
     ///
     /// This method is useful when you need to register several related dependencies and want

@@ -6,6 +6,10 @@
 //! long-lived tasks, receiving periodic intervals, wrapping streams, and triggering
 //! a graceful shutdown from anywhere within a hook.
 
+use std::mem::ManuallyDrop;
+use std::time::Duration;
+
+use metronomos_pulse::value::CustomPulseValue;
 use tokio::sync::mpsc::error::TrySendError;
 use tokio::sync::mpsc::{self};
 use tracing::error;
@@ -14,16 +18,9 @@ pub mod context;
 mod hook;
 mod inner;
 
-/// The context passed to lifecycle hooks.
-///
-/// Provides methods for spawning background tasks, receiving periodic intervals,
-/// wrapping Tokio streams, and triggering a graceful shutdown of the application.
-///
-/// See [`LifecycleContext::notify_error`] to initiate an immediate shutdown from within a hook.
 pub use context::LifecycleContext;
-use hook::LifeCycleHook;
+use hook::LifecycleHook;
 pub(crate) use inner::LifecycleInner;
-use metronomos_pulse::value::CustomPulseValue;
 
 /// A cloneable handle for registering application lifecycle hooks.
 ///
@@ -32,7 +29,16 @@ use metronomos_pulse::value::CustomPulseValue;
 #[derive(Clone)]
 #[repr(transparent)]
 pub struct Lifecycle {
-    sink: mpsc::Sender<LifeCycleHook>,
+    sink: mpsc::Sender<LifecycleHook>,
+}
+
+/// A builder for registering a lifecycle hook.
+///
+/// This builder is returned by the [`Lifecycle::hook`] method and allows for additional
+/// configuration of the hook before it is registered with the runtime.
+pub struct LifecycleHookBuilder<'a> {
+    lifecycle: &'a Lifecycle,
+    hook: ManuallyDrop<LifecycleHook>,
 }
 
 impl CustomPulseValue for Lifecycle {
@@ -40,18 +46,23 @@ impl CustomPulseValue for Lifecycle {
 }
 
 impl Lifecycle {
-    /// Register an async lifecycle hook to be executed at application startup.
+    /// Register an async lifecycle hook to be executed at application startup, to be run during the
+    /// lifecycle of the application until shutdown.
     ///
     /// The `run` closure is invoked with a [`LifecycleContext`] when the runtime starts.
-    /// Use the context to spawn long-running background tasks, register periodic intervals,
-    /// or wrap Tokio streams. All spawned tasks are tracked and awaited during graceful shutdown.
-    pub fn register_hook<F, Fut>(&self, run: F)
+    /// Use the context to gracefully stop on shutdown.
+    pub fn hook<F, Fut>(&self, run: F) -> LifecycleHookBuilder<'_>
     where
         F: Fn(LifecycleContext) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
-        let hook = LifeCycleHook::new(run);
+        LifecycleHookBuilder {
+            lifecycle: self,
+            hook: ManuallyDrop::new(LifecycleHook::new(run)),
+        }
+    }
 
+    fn register_hook_inner(&self, hook: LifecycleHook) {
         if let Err(err) = self.sink.try_send(hook) {
             match err {
                 TrySendError::Full(_) => {
@@ -64,5 +75,45 @@ impl Lifecycle {
                 }
             }
         }
+    }
+}
+
+impl<'a> LifecycleHookBuilder<'a> {
+    /// Set a custom timeout for the lifecycle hook.
+    ///
+    /// If the hook does not complete within the specified duration, it will be forcefully terminated.
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.hook.set_timeout(timeout);
+        self
+    }
+
+    /// Disable the default timeout for the lifecycle hook.
+    ///
+    /// <div class="warning">
+    ///
+    /// Disabling the timeout can lead to the application hanging indefinitely if the hook does not complete.
+    /// You should only disable the timeout if your hook respects the shutdown signal and will
+    /// complete in a reasonable amount of time.
+    ///
+    /// </div>
+    pub fn disable_timeout(mut self) -> Self {
+        self.hook.disable_timeout();
+        self
+    }
+
+    /// Register the lifecycle hook with the runtime.
+    /// Alternatively, you can simply drop the builder to register the hook.
+    pub fn register(self) {
+        drop(self);
+    }
+}
+
+impl Drop for LifecycleHookBuilder<'_> {
+    fn drop(&mut self) {
+        let hook = unsafe {
+            // SAFETY: The builder is being dropped, so we can safely take ownership of the hook.
+            ManuallyDrop::take(&mut self.hook)
+        };
+        self.lifecycle.register_hook_inner(hook);
     }
 }

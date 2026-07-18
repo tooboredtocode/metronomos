@@ -1,17 +1,21 @@
+use std::time::Duration;
+
 use metronomos_pulse::dependency::FnDependency;
 use tokio::sync::mpsc;
 
 use crate::lifecycle::Lifecycle;
 use crate::lifecycle::context::LifecycleContextManager;
-use crate::lifecycle::hook::LifeCycleHook;
+use crate::lifecycle::hook::LifecycleHook;
+
+const DEFAULT_LIFECYCLE_TIMEOUT: Duration = Duration::ZERO;
+const MAX_CHANNEL_SIZE: usize = u16::MAX as usize;
 
 pub(crate) struct LifecycleInner {
-    sink: mpsc::Sender<LifeCycleHook>,
-    source: mpsc::Receiver<LifeCycleHook>,
-    registered_hooks: Vec<LifeCycleHook>,
+    sink: mpsc::Sender<LifecycleHook>,
+    source: mpsc::Receiver<LifecycleHook>,
+    default_timeout: Duration,
+    registered_hooks: Vec<LifecycleHook>,
 }
-
-const MAX_CHANNEL_SIZE: usize = u16::MAX as usize;
 
 impl LifecycleInner {
     pub(crate) fn new() -> Self {
@@ -19,8 +23,13 @@ impl LifecycleInner {
         Self {
             sink: tx,
             source: rx,
+            default_timeout: DEFAULT_LIFECYCLE_TIMEOUT,
             registered_hooks: Vec::new(),
         }
+    }
+
+    pub(crate) fn set_default_timeout(&mut self, timeout: Duration) {
+        self.default_timeout = timeout;
     }
 
     pub(crate) fn as_provide(&self) -> impl FnDependency<(), Value = Lifecycle> {
@@ -42,7 +51,7 @@ impl LifecycleInner {
         let mut ctx = LifecycleContextManager::new();
 
         for hook in &self.registered_hooks {
-            hook.start(&mut ctx);
+            hook.start_on(&mut ctx, self.default_timeout);
         }
 
         ctx
