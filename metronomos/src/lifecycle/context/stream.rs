@@ -50,6 +50,16 @@ where
     pub fn inner_mut(&mut self) -> &mut S {
         &mut self.inner
     }
+
+    /// Returns a pinned reference to the inner stream.
+    pub fn inner_pin(self: Pin<&Self>) -> Pin<&S> {
+        self.project_ref().inner
+    }
+
+    /// Returns a pinned mutable reference to the inner stream.
+    pub fn inner_pin_mut(self: Pin<&mut Self>) -> Pin<&mut S> {
+        self.project().inner
+    }
 }
 
 impl<S> Stream for LifecycleStream<S>
