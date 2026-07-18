@@ -17,6 +17,7 @@
 //!
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -41,10 +42,37 @@ pub use stream::LifecycleStream;
 /// wrapping Tokio streams, and triggering a graceful shutdown of the application.
 ///
 /// See [`LifecycleContext::notify_error`] to initiate an immediate shutdown from within a hook.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
+#[repr(transparent)]
 pub struct LifecycleContext {
+    inner: Arc<ContextInner>,
+}
+
+struct ContextInner {
     notify: Arc<Notify>,
-    shutdown: Arc<AtomicBool>,
+    shutdown: AtomicBool,
+    error: AtomicBool,
+}
+
+impl fmt::Debug for LifecycleContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LifecycleContext")
+            .field("notify", &self.inner.notify)
+            .field("shutdown", &self.is_shutdown())
+            .field("error", &self.is_error())
+            .finish()
+    }
+}
+
+/// The current state of the lifecycle context.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleState {
+    /// The lifecycle context is running normally.
+    Running,
+    /// The lifecycle context is shutting down due to a shutdown request.
+    Shutdown,
+    /// The lifecycle context is shutting down due to a fatal error.
+    Error,
 }
 
 pub(crate) struct LifecycleContextManager {
@@ -67,31 +95,71 @@ impl LifecycleContext {
     /// effect as a single call. The first caller wins.
     #[inline]
     pub fn notify_error(&self) {
-        self.shutdown();
+        self.shutdown(true);
+    }
+
+    /// Get the current state of the lifecycle context.
+    pub fn state(&self) -> LifecycleState {
+        if !self.is_shutdown() {
+            return LifecycleState::Running;
+        }
+
+        if self.is_error() {
+            LifecycleState::Error
+        } else {
+            LifecycleState::Shutdown
+        }
     }
 
     fn is_shutdown(&self) -> bool {
-        self.shutdown.load(Ordering::Acquire)
+        self.inner.shutdown.load(Ordering::Acquire)
+    }
+
+    fn is_error(&self) -> bool {
+        self.inner.error.load(Ordering::Acquire)
     }
 
     /// Notify the lifecycle context of a shutdown request, which will initiate a graceful shutdown
     /// of the application. This operation is idempotent, and multiple calls to this method will
     /// have no effect after the first call.
-    fn shutdown(&self) {
-        let already_shutdown = self.shutdown.swap(true, Ordering::AcqRel);
+    fn shutdown(&self, error: bool) {
+        let already_shutdown = self.inner.shutdown.swap(true, Ordering::AcqRel);
         if already_shutdown {
             debug!("Shutdown already initiated, ignoring duplicate shutdown request");
             return;
         }
-        self.notify.notify_waiters();
+        // Set the error flag if this is a shutdown due to an error, otherwise leave it as false.
+        self.inner.error.store(error, Ordering::Release);
+        // Notify all waiters that a shutdown has been requested.
+        self.inner.notify.notify_waiters();
+    }
+}
+
+impl LifecycleState {
+    /// Returns true if the lifecycle context is running normally.
+    pub fn is_running(&self) -> bool {
+        matches!(self, LifecycleState::Running)
+    }
+
+    /// Returns true if the lifecycle context is shutting down due to a shutdown request.
+    pub fn is_shutdown(&self) -> bool {
+        matches!(self, LifecycleState::Shutdown)
+    }
+
+    /// Returns true if the lifecycle context is shutting down due to a fatal error.
+    pub fn is_error(&self) -> bool {
+        matches!(self, LifecycleState::Error)
     }
 }
 
 impl LifecycleContextManager {
     pub(super) fn new() -> Self {
         let ctx = LifecycleContext {
-            notify: Arc::new(Notify::new()),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            inner: Arc::new(ContextInner {
+                notify: Arc::new(Notify::new()),
+                shutdown: AtomicBool::new(false),
+                error: AtomicBool::new(false),
+            }),
         };
         Self {
             ctx,
@@ -140,7 +208,7 @@ impl LifecycleContextManager {
             join_set, timeouts, ..
         } = self;
 
-        self.ctx.shutdown();
+        self.ctx.shutdown(false);
         debug!("Waiting for {} tasks to finish", join_set.len());
 
         // Wait for all tasks to finish or abort any that exceed their timeout.

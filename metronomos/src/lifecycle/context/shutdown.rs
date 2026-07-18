@@ -40,7 +40,7 @@ impl<'a> Shutdown<'a> {
     fn new(context: &'a LifecycleContext) -> Self {
         let notified = match context.is_shutdown() {
             true => None,
-            false => Some(context.notify.notified()),
+            false => Some(context.inner.notify.notified()),
         };
 
         Self { notified }
@@ -62,7 +62,7 @@ impl ShutdownOwned {
     fn new(context: &LifecycleContext) -> Self {
         let owned_notified = match context.is_shutdown() {
             true => None,
-            false => Some(context.notify.clone().notified_owned()),
+            false => Some(context.inner.notify.clone().notified_owned()),
         };
 
         Self { owned_notified }
