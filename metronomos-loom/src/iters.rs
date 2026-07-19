@@ -145,11 +145,11 @@ impl<'a, D: Dependency> InitChunksIter<'a, D> {
             }
             DepOrDepGroupItemRef::DependencyGroupItem(group_item) => {
                 self.available.visit(group_item.node_idx);
-                // Check if all items in the group are visited, and if so, mark the group as available.
+                // Check if all items in the group are available, and if so, mark the group as available as well.
                 let group = group_item.group();
                 if group
                     .items()
-                    .all(|item| self.visited.is_visited(&item.node_idx))
+                    .all(|item| self.available.is_visited(&item.node_idx))
                 {
                     self.available.visit(group.group_entry.group_node);
                 }
