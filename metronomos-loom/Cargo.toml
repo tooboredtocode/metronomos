@@ -14,3 +14,4 @@ keywords = ["dependency-injection", "di", "graph", "dag", "containers"]
 [dependencies]
 daggy = "0.9"
 itertools = "0.15"
+fixedbitset = "0.5"

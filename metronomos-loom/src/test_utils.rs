@@ -259,7 +259,12 @@ pub(crate) fn create_dependency_graph_var_c() -> DependencyGraph<TestDependency>
         .add_dependency(TestDependency::new(
             "Dep J",
             true,
-            [("Dep A", true, false), ("Dep B", true, false), ("Dep I", true, true)].into_iter(),
+            [
+                ("Dep A", true, false),
+                ("Dep B", true, false),
+                ("Dep I", true, true),
+            ]
+            .into_iter(),
         ))
         .unwrap();
 

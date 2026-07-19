@@ -1,283 +1,176 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::{fmt, mem};
+use std::mem;
 
+use daggy::petgraph::visit::{Bfs, Reversed, VisitMap, Visitable};
+use daggy::{NodeIndex, Walker};
+use fixedbitset::FixedBitSet;
+
+use crate::DependencyGraph;
 use crate::dependency::Dependency;
-use crate::graph::DependencyGraph;
-use crate::graph_ref::{
-    DepOrDepGroupItemRef, DepOrDepGroupRef, DependencyGroupItemRef, DependencyGroupRef,
-    DependencyRef,
-};
-use crate::node_descriptors::RootNode;
+use crate::graph_ref::{DepOrDepGroupItemRef, DepOrDepGroupRef};
+use crate::node_descriptors::GraphNodeKind;
 
-pub(crate) struct AllDependenciesIter<'a, D: Dependency> {
-    visited: HashSet<(D::Key, bool)>, // The bool indicates whether the key is a dependency (true) or a dependency group item (false)
-    queue: VecDeque<DepOrDepGroupItemRef<'a, D>>,
+fn raw_direct_dependencies_for_node<D: Dependency>(
+    dep: &DependencyGraph<D>,
+    node_idx: NodeIndex,
+) -> impl Iterator<Item = NodeIndex> + '_ {
+    dep.graph
+        .parents(node_idx)
+        .iter(&dep.graph)
+        .map(|(_, node_idx)| node_idx)
 }
 
-impl<'a, D> AllDependenciesIter<'a, D>
-where
-    D: Dependency,
-{
-    pub(crate) fn new(start: DepOrDepGroupItemRef<'a, D>) -> Self {
-        let mut res = Self {
-            visited: HashSet::new(),
-            queue: VecDeque::from([start]),
-        };
+pub(crate) fn direct_dependencies_for_node<D: Dependency>(
+    dep: &DependencyGraph<D>,
+    node_idx: NodeIndex,
+) -> impl Iterator<Item = DepOrDepGroupRef<'_, D>> {
+    raw_direct_dependencies_for_node(dep, node_idx).filter_map(move |node_idx| {
+        let key = &dep.graph[node_idx];
+        match key.kind {
+            GraphNodeKind::Dependency => dep.get_dependency(&key.key).map(DepOrDepGroupRef::Dependency),
+            GraphNodeKind::DependencyGroup => dep.get_dependency_group(&key.key).map(DepOrDepGroupRef::DependencyGroup),
+            #[cfg(debug_assertions)]
+            GraphNodeKind::DependencyGroupItem(_) => panic!("Dependencies should not be able to depend on DependencyGroupMember nodes directly!",),
+            #[cfg(not(debug_assertions))]
+            GraphNodeKind::DependencyGroupItem(_) => None,
+        }
+    })
+}
 
-        let _ = res.next(); // Skip the first element, as it is the starting dependency
-        res
-    }
-
-    fn update_queue(&mut self, dep: DepOrDepGroupRef<'a, D>) {
-        match dep {
-            DepOrDepGroupRef::Dependency(dep) => {
-                let key = (dep.key.clone(), true);
-                if self.visited.contains(&key) {
-                    return;
-                }
-                self.visited.insert(key);
-                self.queue.push_back(DepOrDepGroupItemRef::Dependency(dep));
+pub(crate) fn direct_dependants_for_node<D: Dependency>(
+    dep: &DependencyGraph<D>,
+    node_idx: NodeIndex,
+) -> impl Iterator<Item = DepOrDepGroupItemRef<'_, D>> {
+    dep
+        .graph
+        .children(node_idx)
+        .iter(&dep.graph)
+        .filter_map(|(_, node_idx)| {
+            let key = &dep.graph[node_idx];
+            match key.kind {
+                GraphNodeKind::Dependency => dep.get_dependency(&key.key).map(DepOrDepGroupItemRef::Dependency),
+                GraphNodeKind::DependencyGroupItem(idx) => dep.get_dependency_group_item(&key.key, idx).map(DepOrDepGroupItemRef::DependencyGroupItem),
+                #[cfg(debug_assertions)]
+                GraphNodeKind::DependencyGroup => panic!("Dependency groups should not be able to depend on Dependencies or Dependency Groups directly!",),
+                #[cfg(not(debug_assertions))]
+                GraphNodeKind::DependencyGroup => None,
             }
-            DepOrDepGroupRef::DependencyGroup(group) => {
-                let key = (group.key.clone(), false);
-                if self.visited.contains(&key) {
-                    return;
-                }
-                self.visited.insert(key);
-                self.queue
-                    .extend(group.items().map(DepOrDepGroupItemRef::DependencyGroupItem));
-            }
-        }
-    }
+        })
 }
 
-impl<'a, D> Iterator for AllDependenciesIter<'a, D>
-where
-    D: Dependency,
-{
-    type Item = DepOrDepGroupItemRef<'a, D>;
+pub(crate) fn all_dependencies_for_node<D: Dependency>(
+    dep: &DependencyGraph<D>,
+    node_idx: NodeIndex,
+) -> impl Iterator<Item = DepOrDepGroupRef<'_, D>> {
+    let graph = Reversed(&dep.graph);
+    let mut node_iter = Bfs::new(graph, node_idx).iter(graph);
 
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.queue.pop_front()?;
+    let first_node = node_iter.next(); // Skip the first node, which is the node itself.
+    debug_assert_eq!(
+        first_node,
+        Some(node_idx),
+        "The first node in the BFS iterator should be the node itself."
+    );
 
-        for dep in next.direct_dependencies() {
-            self.update_queue(dep);
+    node_iter.filter_map(|node_idx| {
+        let key = &dep.graph[node_idx];
+        match key.kind {
+            GraphNodeKind::Dependency => dep
+                .get_dependency(&key.key)
+                .map(DepOrDepGroupRef::Dependency),
+            GraphNodeKind::DependencyGroup => dep
+                .get_dependency_group(&key.key)
+                .map(DepOrDepGroupRef::DependencyGroup),
+            // We already yielded the parent DependencyGroup, so we don't want to yield the DependencyGroupItem nodes.
+            GraphNodeKind::DependencyGroupItem(_) => None,
         }
-
-        Some(next)
-    }
+    })
 }
 
-pub(crate) struct AllDependantsIter<'a, D: Dependency> {
-    // The root node struct already contains the information about whether it is a dependency
-    // or a dependency group item.
-    visited: HashSet<RootNode<D::Key>>,
-    queue: VecDeque<DepOrDepGroupItemRef<'a, D>>,
-}
+pub(crate) fn all_dependants_for_node<D: Dependency>(
+    dep: &DependencyGraph<D>,
+    node_idx: NodeIndex,
+) -> impl Iterator<Item = DepOrDepGroupItemRef<'_, D>> {
+    let mut node_iter = Bfs::new(&dep.graph, node_idx).iter(&dep.graph);
 
-impl<'a, D> AllDependantsIter<'a, D>
-where
-    D: Dependency,
-{
-    pub(crate) fn new(start: DepOrDepGroupItemRef<'a, D>) -> Self {
-        let mut res = Self {
-            visited: HashSet::new(),
-            queue: VecDeque::from([start]),
-        };
+    let first_node = node_iter.next(); // Skip the first node, which is the node itself.
+    debug_assert_eq!(
+        first_node,
+        Some(node_idx),
+        "The first node in the BFS iterator should be the node itself."
+    );
 
-        let _ = res.next(); // Skip the first element, as it is the starting dependency
-        res
-    }
-
-    pub(crate) fn new_from_group(start: DependencyGroupRef<'a, D>) -> Self {
-        // We just return an arbitrary item from the group, since that will just call
-        // the same dependants as the group itself.
-        let start = start
-            .items()
-            .next()
-            .expect("Dependency group should have at least one item");
-
-        Self::new(DepOrDepGroupItemRef::DependencyGroupItem(start))
-    }
-
-    fn update_queue(&mut self, dep: DepOrDepGroupItemRef<'a, D>) {
-        match dep {
-            DepOrDepGroupItemRef::Dependency(dep) => {
-                let root_node = RootNode::new_dependency(dep.key.clone());
-                if self.visited.contains(&root_node) {
-                    return;
-                }
-                self.visited.insert(root_node);
-                self.queue.push_back(DepOrDepGroupItemRef::Dependency(dep));
-            }
-            DepOrDepGroupItemRef::DependencyGroupItem(item) => {
-                let root_node = RootNode::new_dependency_group_item(item.key.clone(), item.idx);
-                if self.visited.contains(&root_node) {
-                    return;
-                }
-                self.visited.insert(root_node);
-                self.queue
-                    .push_back(DepOrDepGroupItemRef::DependencyGroupItem(item));
-            }
+    node_iter.filter_map(|node_idx| {
+        let key = &dep.graph[node_idx];
+        match key.kind {
+            GraphNodeKind::Dependency => dep
+                .get_dependency(&key.key)
+                .map(DepOrDepGroupItemRef::Dependency),
+            GraphNodeKind::DependencyGroup => None, // The Group only depends on its members, so we skip it.
+            GraphNodeKind::DependencyGroupItem(idx) => dep
+                .get_dependency_group_item(&key.key, idx)
+                .map(DepOrDepGroupItemRef::DependencyGroupItem),
         }
-    }
-}
-
-impl<'a, D> Iterator for AllDependantsIter<'a, D>
-where
-    D: Dependency,
-{
-    type Item = DepOrDepGroupItemRef<'a, D>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let next = self.queue.pop_front()?;
-
-        for dep in next.direct_dependants() {
-            self.update_queue(dep);
-        }
-
-        Some(next)
-    }
-}
-
-struct GroupMissingItems(Box<[u8]>);
-
-impl GroupMissingItems {
-    fn new(group_items: usize) -> Self {
-        let mut bytes = vec![u8::MAX; group_items.div_ceil(8)];
-        let remainder = group_items % 8;
-        if remainder != 0 {
-            let last_byte_index = bytes.len() - 1;
-            let mask = (1u8 << remainder) - 1;
-            bytes[last_byte_index] &= mask;
-        }
-
-        Self(bytes.into_boxed_slice())
-    }
-
-    fn is_item_yielded(&self, item_idx: usize) -> bool {
-        let byte_index = item_idx / 8;
-        let bit_index = item_idx % 8;
-        (self.0[byte_index] & (1 << bit_index)) == 0
-    }
-
-    fn mark_item_as_yielded(&mut self, item_idx: usize) {
-        let byte_index = item_idx / 8;
-        let bit_index = item_idx % 8;
-        self.0[byte_index] &= !(1 << bit_index);
-    }
-
-    fn has_missing_items(&self) -> bool {
-        self.0.iter().any(|&byte| byte != 0)
-    }
-}
-
-impl fmt::Debug for GroupMissingItems {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("GroupMissingItems(")?;
-        for byte in self.0.iter().rev() {
-            write!(f, "{:08b}", byte)?;
-        }
-        f.write_str(")")?;
-        Ok(())
-    }
+    })
 }
 
 pub(crate) struct InitChunksIter<'a, D: Dependency> {
-    yielded: HashSet<D::Key>,
-    yielded_group_items: HashMap<D::Key, GroupMissingItems>,
+    visited: FixedBitSet,
+    available: FixedBitSet,
     next: Vec<DepOrDepGroupItemRef<'a, D>>,
 }
 
 impl<'a, D: Dependency> InitChunksIter<'a, D> {
     pub(crate) fn new(dep: &'a DependencyGraph<D>) -> Self {
         let mut res = Self {
-            yielded: HashSet::new(),
-            yielded_group_items: HashMap::new(),
-            next: Vec::new(),
+            visited: dep.graph.visit_map(),
+            available: dep.graph.visit_map(),
+            next: dep.root_nodes().collect::<Vec<_>>(),
         };
 
-        // Add all the root dependencies to the next queue, as they can be yielded first.
-        for root_dep in dep.root_nodes() {
-            res.add_to_yielded(&root_dep);
-            res.next.push(root_dep);
+        for root_dep in &res.next {
+            res.visited.visit(root_dep.node_index());
         }
 
         res
     }
 
-    fn add_to_yielded(&mut self, dep: &DepOrDepGroupItemRef<'a, D>) {
+    fn mark_as_visited(&mut self, dep: &DepOrDepGroupItemRef<'a, D>) {
+        self.visited.visit(dep.node_index());
+    }
+
+    fn mark_as_available(&mut self, dep: &DepOrDepGroupItemRef<'a, D>) {
         match dep {
             DepOrDepGroupItemRef::Dependency(dep) => {
-                self.yielded.insert(dep.key.clone());
+                self.available.visit(dep.entry.graph_node);
             }
-            DepOrDepGroupItemRef::DependencyGroupItem(item) => {
-                let group_missing_items = self
-                    .yielded_group_items
-                    .entry(item.key.clone())
-                    .or_insert_with(|| GroupMissingItems::new(item.group_entry.dependencies.len()));
-
-                group_missing_items.mark_item_as_yielded(item.idx as usize);
-                if !group_missing_items.has_missing_items() {
-                    self.yielded.insert(item.key.clone());
-                    self.yielded_group_items.remove(item.key);
+            DepOrDepGroupItemRef::DependencyGroupItem(group_item) => {
+                self.available.visit(group_item.node_idx);
+                // Check if all items in the group are visited, and if so, mark the group as available.
+                let group = group_item.group();
+                if group
+                    .items()
+                    .all(|item| self.visited.is_visited(&item.node_idx))
+                {
+                    self.available.visit(group.group_entry.group_node);
                 }
             }
         }
     }
 
-    fn check_if_dependencies_yielded(
-        &self,
-        parents: impl Iterator<Item = DepOrDepGroupRef<'a, D>>,
-    ) -> bool {
-        for parent in parents {
-            let key = match &parent {
-                DepOrDepGroupRef::Dependency(dep) => dep.key,
-                DepOrDepGroupRef::DependencyGroup(group) => group.key,
-            };
-
-            if !self.yielded.contains(key) {
-                return false;
-            }
-        }
-        true
-    }
-
-    fn dep_can_be_yielded(&self, dep: &DependencyRef<'a, D>) -> bool {
-        // If the dependency has already been yielded, it cannot be yielded again.
-        if self.yielded.contains(dep.key) {
-            return false;
-        }
-        // Check if all the direct dependencies have been yielded. If any of them have not been yielded,
-        // then this dependency cannot be yielded yet.
-        self.check_if_dependencies_yielded(dep.direct_dependencies())
-    }
-
-    fn group_item_can_be_yielded(&self, item: &DependencyGroupItemRef<'a, D>) -> bool {
-        // If the dependency group itself has already been yielded, all its items have been yielded,
-        // so this item cannot be yielded again.
-        if self.yielded.contains(item.key) {
-            return false;
+    fn try_visit_dep_or_group_item(
+        &mut self,
+        graph: &'a DependencyGraph<D>,
+        dep: DepOrDepGroupItemRef<'a, D>,
+    ) {
+        if self.visited.is_visited(&dep.node_index()) {
+            return;
         }
 
-        // Group has not been yielded yet, check if the group item has already been yielded. If it has, it cannot be yielded again.
-        if let Some(group_missing_items) = self.yielded_group_items.get(item.key)
-            && group_missing_items.is_item_yielded(item.idx as usize)
+        if raw_direct_dependencies_for_node(graph, dep.node_index())
+            .all(|direct_dep_node_idx| self.available.is_visited(&direct_dep_node_idx))
         {
-            return false;
-        }
-
-        // Check if all the direct dependencies have been yielded. If any of them have not been yielded,
-        // then this dependency group item cannot be yielded yet.
-        self.check_if_dependencies_yielded(item.direct_dependencies())
-    }
-
-    /// Returns true if the given dependency can be yielded, meaning that all of its direct
-    /// dependencies and thus all of its transitive dependencies have already been yielded.
-    fn can_be_yielded(&self, dep: &DepOrDepGroupItemRef<'a, D>) -> bool {
-        match dep {
-            DepOrDepGroupItemRef::Dependency(dep) => self.dep_can_be_yielded(dep),
-            DepOrDepGroupItemRef::DependencyGroupItem(item) => self.group_item_can_be_yielded(item),
+            self.mark_as_visited(&dep);
+            self.next.push(dep);
         }
     }
 }
@@ -292,16 +185,30 @@ impl<'a, D: Dependency> Iterator for InitChunksIter<'a, D> {
 
         let result = mem::take(&mut self.next);
 
+        // Mark the yielded dependencies as available, so that their dependants can be yielded in the next iteration.
+        for dep in &result {
+            self.mark_as_available(dep);
+        }
+
         // Add all the direct dependants of the yielded dependencies to the next queue, if they can be yielded.
-        result
-            .iter()
-            .flat_map(|dep| dep.direct_dependants())
-            .for_each(|dep| {
-                if self.can_be_yielded(&dep) {
-                    self.add_to_yielded(&dep);
-                    self.next.push(dep);
+        for dep in &result {
+            match dep {
+                DepOrDepGroupItemRef::Dependency(dep) => {
+                    for dependant in dep.direct_dependants() {
+                        self.try_visit_dep_or_group_item(dep.dep, dependant);
+                    }
                 }
-            });
+                DepOrDepGroupItemRef::DependencyGroupItem(group_item) => {
+                    let group = group_item.group();
+                    if !self.available.is_visited(&group.group_entry.group_node) {
+                        continue; // The group is not available yet, so we can't yield its dependants.
+                    }
+                    for dependant in group.direct_dependants() {
+                        self.try_visit_dep_or_group_item(group.dep, dependant);
+                    }
+                }
+            }
+        }
 
         Some(result)
     }
