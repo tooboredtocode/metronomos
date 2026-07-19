@@ -193,6 +193,79 @@ pub(crate) fn create_dependency_graph_var_b() -> DependencyGraph<TestDependency>
     builder.build().expect("Graph should be buildable")
 }
 
+pub(crate) fn create_dependency_graph_var_c() -> DependencyGraph<TestDependency> {
+    let mut builder = DependencyGraph::builder();
+
+    builder
+        .add_dependency(TestDependency::new_root("Dep A", false))
+        .unwrap();
+    builder
+        .add_dependency(TestDependency::new_root("Dep B", false))
+        .unwrap();
+    builder
+        .add_dependency(TestDependency::new_root("Dep C", false))
+        .unwrap();
+
+    builder
+        .add_dependency(TestDependency::new(
+            "Dep D",
+            false,
+            [("Dep B", true, false)].into_iter(),
+        ))
+        .unwrap();
+
+    builder
+        .add_dependency(TestDependency::new_root("Dep E", false))
+        .unwrap();
+    builder
+        .add_dependency(TestDependency::new_root("Dep F", false))
+        .unwrap();
+
+    builder
+        .add_dependency(TestDependency::new(
+            "Dep G",
+            false,
+            [
+                ("Dep C", true, false),
+                ("Dep E", true, false),
+                ("Dep F", true, false),
+            ]
+            .into_iter(),
+        ))
+        .unwrap();
+    builder
+        .add_dependency(TestDependency::new(
+            "Dep H",
+            false,
+            [
+                ("Dep A", true, false),
+                ("Dep B", true, false),
+                ("Dep E", true, false),
+                ("Dep F", true, false),
+            ]
+            .into_iter(),
+        ))
+        .unwrap();
+
+    builder
+        .add_dependency(TestDependency::new(
+            "Dep I",
+            true,
+            [("Dep F", true, false)].into_iter(),
+        ))
+        .unwrap();
+
+    builder
+        .add_dependency(TestDependency::new(
+            "Dep J",
+            true,
+            [("Dep A", true, false), ("Dep B", true, false), ("Dep I", true, true)].into_iter(),
+        ))
+        .unwrap();
+
+    builder.build().expect("Graph should be buildable")
+}
+
 pub(crate) fn ref_name(dep_ref: DepOrDepGroupItemRef<'_, TestDependency>) -> &str {
     dep_ref.inner().name()
 }

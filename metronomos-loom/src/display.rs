@@ -346,6 +346,44 @@ mod tests {
         assert_eq!(dot_string, compare_string);
     }
 
+    #[test]
+    fn test_display_var_c() {
+        let graph = create_dependency_graph_var_c();
+
+        let dot_string = format!("{}", graph.display());
+        let compare_string = r#"digraph {
+    0 [ label="Dep A" ]
+    1 [ label="Dep B" ]
+    2 [ label="Dep C" ]
+    3 [ label="Dep D" ]
+    4 [ label="Dep E" ]
+    5 [ label="Dep F" ]
+    6 [ label="Dep G" ]
+    7 [ label="Dep H" ]
+    8 [ label="Dep I" ]
+    9 [ label="Dep I (item 0)" ]
+    10 [ label="Dep J" ]
+    11 [ label="Dep J (item 0)" ]
+    1 -> 3
+    2 -> 6
+    4 -> 6
+    5 -> 6
+    0 -> 7
+    1 -> 7
+    4 -> 7
+    5 -> 7
+    9 -> 8
+    5 -> 9
+    11 -> 10
+    0 -> 11
+    1 -> 11
+    8 -> 11
+}
+"#;
+
+        assert_eq!(dot_string, compare_string);
+    }
+
     fn test_filter(node_ref: DependencyAnyRef<TestDependency>) -> bool {
         match node_ref {
             DependencyAnyRef::Dependency(dep) => dep.inner().name() != "Dep B",

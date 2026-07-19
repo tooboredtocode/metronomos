@@ -312,6 +312,36 @@ mod tests {
     }
 
     #[test]
+    fn test_init_chunks_var_c() {
+        let graph = create_dependency_graph_var_c();
+
+        let mut chunks = graph.init_chunks();
+
+        let chunk1 = count_ref_iter(chunks.next().unwrap().into_iter());
+        assert_eq!(
+            chunk1,
+            HashMap::from([
+                ("Dep A", 1),
+                ("Dep B", 1),
+                ("Dep C", 1),
+                ("Dep E", 1),
+                ("Dep F", 1)
+            ])
+        );
+
+        let chunk2 = count_ref_iter(chunks.next().unwrap().into_iter());
+        assert_eq!(
+            chunk2,
+            HashMap::from([("Dep D", 1), ("Dep G", 1), ("Dep H", 1), ("Dep I", 1)])
+        );
+
+        let chunk3 = count_ref_iter(chunks.next().unwrap().into_iter());
+        assert_eq!(chunk3, HashMap::from([("Dep J", 1)]));
+
+        assert!(chunks.next().is_none());
+    }
+
+    #[test]
     fn test_cyclic_dependency_detection() {
         let mut builder = DependencyGraph::builder();
 
